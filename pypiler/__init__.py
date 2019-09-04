@@ -13,6 +13,11 @@ parser = Parser()
 parser.set_language(PY_LANGUAGE)
 
 operator_registry = {}
+def get_or_create_operator(identifier):
+    if identifier in operator_registry:
+        return operator_registry[identifier]
+    return Operator(identifier)
+
 class Operator:
     def __init__(self, identifier):
         operator_registry[identifier] = self
@@ -71,11 +76,6 @@ class CarrierTuft:
     def __repr__(self):
         return 'CarrierTuft<id="{}", src={}, dst={}>'.format(self.identifier, self.source_binding, self.destination_bindings)
 
-def get_or_create_operator(identifier):
-    if identifier in operator_registry:
-        return operator_registry[identifier]
-    return Operator(identifier)
-
 def constant_to_carrier(operator, value):
     identifier = 'OpConst<{}>'.format(value.identifier) if isinstance(value, Operator) else 'Literal<{}>'.format(value)
     if identifier in operator.carriers:
@@ -93,20 +93,27 @@ def parse_function(func):
     def node_to_identifier(node):
         return '({}) {}:{}'.format(node_source_code(node), node.start_point[0]+1, node.start_point[1]+1)
     def parse_expression(operator, node, output_carrier_identifier=None):
+        while node.type == 'parenthesized_expression':
+            node = node.children[1]
         if node.type == 'integer' or node.type == 'float' or node.type == 'true' or node.type == 'false' or node.type == 'none' or node.type == 'string':
             return constant_to_carrier(operator, node_source_code(node))
         elif node.type == 'identifier':
             return operator.carriers[node_source_code(node)]
-        elif node.type == 'binary_operator':
+        elif node.type == 'call' or node.type == 'unary_operator' or node.type == 'not_operator' or node.type == 'binary_operator' or node.type == 'boolean_operator' or node.type == 'comparison_operator':
             operation = Operation(operator, node_to_identifier(node))
-            operator_to_apply = get_or_create_operator(node_source_code(node.children[1]))
-            input_carriers = {
-                'left': parse_expression(operator, node.children[0]),
-                'right': parse_expression(operator, node.children[2]),
-                'operator': constant_to_carrier(operator, operator_to_apply)
-            }
-            for input_operand, input_carrier in input_carriers.items():
-                CarrierBinding(input_carrier, operation, input_operand, 'input')
+            operator_to_apply = node.children[0]
+            if node.type == 'call':
+                for argument in node.children[1].children:
+                    if argument.type == 'keyword_argument':
+                        CarrierBinding(parse_expression(operator, argument.children[2]), operation, node_source_code(argument.children[0]), 'input')
+            elif node.type == 'unary_operator' or node.type == 'not_operator':
+                CarrierBinding(parse_expression(operator, node.children[1]), operation, 'input', 'input')
+            else:
+                operator_to_apply = node.children[1]
+                CarrierBinding(parse_expression(operator, node.children[0]), operation, 'inputL', 'input')
+                CarrierBinding(parse_expression(operator, node.children[2]), operation, 'inputR', 'input')
+            operator_to_apply = get_or_create_operator(node_source_code(operator_to_apply))
+            CarrierBinding(constant_to_carrier(operator, operator_to_apply), operation, 'operator', 'input')
             output_carrier = CarrierTuft(operator, output_carrier_identifier if output_carrier_identifier else operation.identifier)
             CarrierBinding(output_carrier, operation, 'output', 'output')
             return output_carrier

@@ -1,7 +1,7 @@
 def foo(a, b):
-    c = a + b / 2
-    d = c * 0.5
+    c = a and not b
+    d = bar(x=a, y=c)
     return d
 
-import PyPiler
-print(PyPiler.parse_function(foo))
+import pypiler
+print(pypiler.parse_function(foo))
