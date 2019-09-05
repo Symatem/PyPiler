@@ -4,4 +4,5 @@ def foo(a, b):
     return d
 
 import pypiler
-print(pypiler.parse_function(foo))
+compile_unit = pypiler.CompileUnit(foo)
+print(compile_unit.parse_function_definition(compile_unit.ast.root_node.children[0]))
