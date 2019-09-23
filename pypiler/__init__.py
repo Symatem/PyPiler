@@ -1,5 +1,6 @@
 import os
 import sys
+import ast
 import inspect
 from tree_sitter import Language, Parser
 
@@ -83,7 +84,7 @@ class CarrierTuft:
         )
 
 def constant_to_carrier(operator, value, output_carrier_identifier=None):
-    identifier = 'OpConst<{}>'.format(value.identifier) if isinstance(value, Operator) else 'Literal<{}>'.format(value)
+    identifier = 'OpConst<{}>'.format(value.identifier) if isinstance(value, Operator) else 'Literal<{}>'.format(repr(value))
     if identifier in operator.operations:
         return operator.operations[identifier].output_bindings['output']
     operation = Operation(operator, identifier)
@@ -112,7 +113,7 @@ class CompileUnit:
 
     def resolve_identifier(self, outer_operator, identifier):
         name = self.source_code_of(identifier)
-        return  outer_operator.carriers[name] if name in outer_operator.carriers else None
+        return outer_operator.carriers[name] if name in outer_operator.carriers else None
 
     def parse_expression(self, outer_operator, expression, output_carrier_identifier=None):
         expression_children = self.children_of(expression)
@@ -121,7 +122,7 @@ class CompileUnit:
         if expression.type == 'integer' or expression.type == 'float' or \
            expression.type == 'true' or expression.type == 'false' or \
            expression.type == 'none' or expression.type == 'string':
-            return constant_to_carrier(outer_operator, self.source_code_of(expression), output_carrier_identifier)
+            return constant_to_carrier(outer_operator, ast.literal_eval(self.source_code_of(expression)), output_carrier_identifier)
         elif expression.type == 'tuple' or expression.type == 'generator_expression' or \
              expression.type == 'list' or expression.type == 'list_comprehension' or \
              expression.type == 'set' or expression.type == 'set_comprehension' or \
@@ -131,6 +132,7 @@ class CompileUnit:
         elif expression.type == 'identifier':
             return self.resolve_identifier(outer_operator, expression)
         elif expression.type == 'call' or expression.type == 'conditional_expression' or \
+             expression.type == 'attribute' or expression.type == 'subscript' or \
              expression.type == 'unary_operator' or expression.type == 'not_operator' or \
              expression.type == 'binary_operator' or expression.type == 'boolean_operator' or expression.type == 'comparison_operator':
             operation = Operation(outer_operator, '({}) {}'.format(self.source_code_of(expression), self.source_position_of(expression)))
@@ -146,6 +148,13 @@ class CompileUnit:
                 CarrierBinding(self.parse_expression(outer_operator, expression_children[0]), operation, 'inputTrue', 'input')
                 CarrierBinding(self.parse_expression(outer_operator, expression_children[2]), operation, 'condition', 'input')
                 CarrierBinding(self.parse_expression(outer_operator, expression_children[4]), operation, 'inputFalse', 'input')
+            elif expression.type == 'attribute' or expression.type == 'subscript':
+                if expression.type == 'subscript' and (expression_children[2].type == 'slice' or len(expression_children) != 4):
+                    raise ParsingError('Slice and multi subscript expressions are not supported', self.source_position_of(expression))
+                attribute = self.parse_expression(outer_operator, expression_children[2]) if expression.type == 'subscript' else constant_to_carrier(outer_operator, self.source_code_of(expression_children[2]))
+                operator_to_apply = 'subscript'
+                CarrierBinding(self.parse_expression(outer_operator, expression_children[0]), operation, 'entity', 'input')
+                CarrierBinding(attribute, operation, 'attribute', 'input')
             elif expression.type == 'unary_operator' or expression.type == 'not_operator':
                 CarrierBinding(self.parse_expression(outer_operator, expression_children[1]), operation, 'input', 'input')
             else:
@@ -159,7 +168,7 @@ class CompileUnit:
             output_carrier = CarrierTuft(outer_operator, output_carrier_identifier if output_carrier_identifier else operation.identifier)
             CarrierBinding(output_carrier, operation, 'output', 'output')
             return output_carrier
-        elif statement.type == 'lambda':
+        elif expression.type == 'lambda':
             raise ParsingError('Lambdas are not supported', self.source_position_of(expression))
         else:
             print(expression.sexp())
@@ -171,10 +180,17 @@ class CompileUnit:
             if statement.type == 'expression_statement':
                 if statement_children[0].type == 'assignment':
                     assignment_children = self.children_of(statement_children[0])
-                    if assignment_children[0].type != 'expression_list' or assignment_children[1].type != '=' or assignment_children[2].type != 'expression_list':
+                    if assignment_children[0].type == 'expression_list' and \
+                       assignment_children[1].type == '=' and assignment_children[2].type == 'expression_list':
+                        left_side = self.children_of(assignment_children[0])
+                        right_side = self.children_of(assignment_children[2])
+                    elif assignment_children[0].type == 'expression_list' and \
+                         assignment_children[1].type == ':' and assignment_children[2].type == 'type' and \
+                         assignment_children[3].type == '=' and assignment_children[4].type == 'expression_list':
+                        left_side = self.children_of(assignment_children[0])
+                        right_side = self.children_of(assignment_children[4])
+                    else:
                         raise ParsingError('Unsupported assignment', self.source_position_of(statement))
-                    left_side = self.children_of(assignment_children[0])
-                    right_side = self.children_of(assignment_children[2])
                     for i in range(0, len(left_side)):
                         if left_side[i].type == ',':
                             continue
@@ -203,14 +219,14 @@ class CompileUnit:
                 raise ParsingError('Unsupported statement', self.source_position_of(statement))
 
     def parse_function_definition(self, function_definition):
-        function_name = self.source_code_of(self.children_of(function_definition)[1])
+        function_definition_children = self.children_of(function_definition)
+        function_name = self.source_code_of(function_definition_children[1])
         operator_registry[function_name] = operator = Operator(function_name)
-        for parameter in self.children_of(self.children_of(function_definition)[2])[1:-1]:
-            if parameter.type == 'identifier':
-                variable = CarrierTuft(operator, self.source_code_of(parameter))
+        for parameter in self.children_of(function_definition_children[2])[1:-1]:
+            if parameter.type == 'identifier' or parameter.type == 'typed_parameter':
+                identifier = parameter if parameter.type == 'identifier' else self.children_of(parameter)[0]
+                variable = CarrierTuft(operator, self.source_code_of(identifier))
                 CarrierBinding(variable, operator.self_operation, variable.identifier, 'output')
-            elif parameter.type == 'typed_parameter':
-                raise ParsingError('Typed parameters are not supported', self.source_position_of(parameter))
             elif parameter.type == 'default_parameter':
                 raise ParsingError('Default parameters are not supported', self.source_position_of(parameter))
             elif parameter.type == 'list_splat' or parameter.type == 'dictionary_splat':
@@ -218,5 +234,5 @@ class CompileUnit:
             elif parameter.type != ',':
                 print(parameter.sexp())
                 raise ParsingError('Unsupported parameter', self.source_position_of(parameter))
-        self.parse_block(operator, self.children_of(function_definition)[4])
+        self.parse_block(operator, function_definition_children[4] if function_definition_children[4].type == 'block' else function_definition_children[6])
         return operator
